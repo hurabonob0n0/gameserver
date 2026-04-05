@@ -1,12 +1,35 @@
-#include <iostream>
+ï»¿#include <iostream>
 #include <WS2tcpip.h>
 #include <unordered_map>
 #include <MSWSock.h>
+
 #pragma comment(lib, "MSWSock.lib")
 #pragma comment(lib, "WS2_32.lib")
 using namespace std;
 constexpr int PORT_NUM = 3500;
 constexpr int BUF_SIZE = 200;
+
+enum IOType {IO_SEND, IO_RECV, IO_ACCEPT};
+
+class EXP_OVER {
+public:
+	WSAOVERLAPPED m_over;
+	IOType  m_iotype;
+	WSABUF	m_wsa;
+	char  m_buff[BUF_SIZE];
+	EXP_OVER() 
+	{ 
+		ZeroMemory(&m_over, sizeof(m_over));
+		m_wsa.buf = m_buff;
+		m_wsa.len = BUF_SIZE;
+	}
+	EXP_OVER(IOType iot) : m_iotype(iot)
+	{
+		ZeroMemory(&m_over, sizeof(m_over));
+		m_wsa.buf = m_buff;
+		m_wsa.len = BUF_SIZE;
+	}
+};
 
 void error_display(const wchar_t* msg, int err_no)
 {
@@ -18,43 +41,21 @@ void error_display(const wchar_t* msg, int err_no)
 		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
 		(LPTSTR)&lpMsgBuf, 0, NULL);
 	std::wcout << msg;
-	std::wcout << L" === ¿¡·¯ " << lpMsgBuf << std::endl;
-	while (true);   // µð¹ö±ë ¿ë
+	std::wcout << L" === ì—ëŸ¬ " << lpMsgBuf << std::endl;
+	while (true);   // ë””ë²„ê¹… ìš©
 	LocalFree(lpMsgBuf);
 }
-
-enum IOType {IO_SEND,IO_RECV,IO_ACCEPT};
-
-class EXP_OVER {
-public:
-	WSAOVERLAPPED m_over;
-	IOType m_Iotype;
-	WSABUF	m_wsa;
-	char  m_buff[BUF_SIZE];
-	EXP_OVER() {
-		ZeroMemory(&m_over, sizeof(m_over));
-		m_wsa.buf = m_buff;
-		m_wsa.len = BUF_SIZE;
-	}
-	EXP_OVER(IOType iot) : m_Iotype(iot)
-	{
-		ZeroMemory(&m_over, sizeof(m_over));
-		m_wsa.buf = m_buff;
-		m_wsa.len = BUF_SIZE;
-	}
-};
 
 class SESSION;
 unordered_map<long long, SESSION> clients;
 class SESSION {
 	SOCKET client;
-	EXP_OVER recv_over;
 	long long m_id;
 public:
+	EXP_OVER recv_over;
 	SESSION() { exit(-1); }
 	SESSION(int id, SOCKET so) : m_id(id), client(so)
 	{
-		recv_wsabuf[0].buf = recv_mess;
 	}
 	~SESSION()
 	{
@@ -64,32 +65,31 @@ public:
 	{
 		DWORD recv_flag = 0;
 		memset(&recv_over.m_over, 0, sizeof(recv_over.m_over));
-		WSARecv(client, &recv_over.m_wsa, 1, 0, &recv_flag, & recv_over.m_over, recv_callback);
+
+		recv_over.m_iotype = IO_RECV;
+
+		int result = WSARecv(client, &recv_over.m_wsa, 1, nullptr, &recv_flag, &recv_over.m_over, nullptr);
+		if (result == SOCKET_ERROR) {
+			int err = WSAGetLastError();
+			if (err != WSA_IO_PENDING) {
+				error_display(L"WSARecv Error: ", err);
+				clients.erase(m_id);
+			}
+		}
 	}
 	void do_send(int sender_id, int num_bytes, char* mess)
 	{
 		EXP_OVER* o = new EXP_OVER(IO_SEND);
-		o->m_buff[0] = num_bytes + 2;
-		o->m_buff[1] = sender_id;
+
+		o->m_buff[0] = static_cast<char>(num_bytes + 2);
+		o->m_buff[1] = static_cast<char>(sender_id);
 		memcpy(o->m_buff + 2, mess, num_bytes);
-		WSASend(client, &o->m_wsa, 1, 0, 0, &o->m_over, nullptr);
+
+		o->m_wsa.len = num_bytes + 2;
+
+		WSASend(client, &o->m_wsa, 1, nullptr, 0, &o->m_over, nullptr);
 	}
 };
-
-
-{
-	int client_id = static_cast<int>(reinterpret_cast<long long>(over->hEvent));
-	cout << "Client[" << client_id << "] sent: " << clients[client_id].c_mess << endl;
-	for (auto& cl : clients)
-		cl.second.do_send(client_id, num_bytes, clients[client_id].c_mess);
-	clients[client_id].do_recv();
-}
-
-void CALLBACK send_callback(DWORD err, DWORD num_bytes, LPWSAOVERLAPPED over, DWORD flags)
-{
-	EXP_OVER* o = reinterpret_cast<EXP_OVER*>(over);
-	delete o;
-}
 
 int main()
 {
@@ -113,31 +113,59 @@ int main()
 		sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, 
 		NULL, &accept_over.m_over);
 
-
-	while (true) {
+	for (int i = 1;;++i) {
 		DWORD num_bytes;
-		ULONG_PTR
-			key;
+		ULONG_PTR key;
 		LPOVERLAPPED over;
 		GetQueuedCompletionStatus(h_iocp, &num_bytes, &key, &over, INFINITE);
 		if (over == nullptr) {
-			error_display(L"GetQueuedCompletionStatus() failed", GetLastError());
+			error_display(L"GQCS Errror: ", WSAGetLastError());
 			continue;
 		}
 		EXP_OVER* exp_over = reinterpret_cast<EXP_OVER*>(over);
-		switch (exp_over->m_Iotype) {
+		switch (exp_over->m_iotype) {
 		case IO_ACCEPT:
-		{
-			cout << "New client connected." << endl;
+			cout << "Client connected." << endl;
+			CreateIoCompletionPort((HANDLE)client_socket, h_iocp, i, 0);
+			clients.try_emplace(i, i, client_socket);
+			clients[i].do_recv();
+			client_socket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 			AcceptEx(server, client_socket, &accept_over.m_buff, 0,
 				sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16,
 				NULL, &accept_over.m_over);
-			clients.try_emplace(client_socket, client_socket);
-			clients[client_socket].do_recv();
+			break;
+		case IO_RECV:
+		{
+			int client_id = static_cast<int>(key);
+
+			if (num_bytes == 0) {
+				cout << "Client[" << client_id << "] disconnected." << endl;
+				clients.erase(client_id);
+				break;
+			}
+
+			string msg(clients[client_id].recv_over.m_buff, num_bytes);
+			cout << "Client[" << client_id << "] sent: " << msg << endl;
+
+			for (auto& cl : clients)
+				cl.second.do_send(client_id, num_bytes, clients[client_id].recv_over.m_buff);
+
+			clients[client_id].do_recv();
+		}
+		break;
+
+		case IO_SEND: {
+			cout << "Message sent." << endl;
+			EXP_OVER* o = reinterpret_cast<EXP_OVER*>(over);
+			delete o;
+		}
+			break;
+		default:
+			cout << "Unknown IO type." << endl;
 			break;
 		}
-		
 	}
+
 
 	SOCKADDR_IN cl_addr;
 	int addr_size = sizeof(cl_addr);
