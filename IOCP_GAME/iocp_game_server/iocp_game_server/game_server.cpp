@@ -138,6 +138,12 @@ void SESSION::process_packet(unsigned char* p)
 		strncpy_s(m_username, packet->username, MAX_NAME_LEN);
 		cout << "Player[" << m_id << "] logged in as " << m_username << endl;
 		send_avatar_info();
+
+		for (auto& other : clients) {
+			if (false == other.m_is_connected || other.m_id == m_id) continue;
+			other.send_add_player(m_id);
+			send_add_player(other.m_id);
+		}
 	}
 				  break;
 	case C2S_MOVE: {
@@ -183,6 +189,21 @@ void send_login_fail(SOCKET client, const char* message)
 	wsa_buf.buf = reinterpret_cast<char*>(&packet);
 	wsa_buf.len = packet.size;
 	WSASend(client, &wsa_buf, 1, 0, 0, nullptr, nullptr);
+}
+
+void disconnect_client(int id) {
+	if (clients[id].m_is_connected == false) return;
+
+	clients[id].m_is_connected = false;
+	closesocket(clients[id].m_client);
+	clients[id].m_client = INVALID_SOCKET;
+
+	for (auto& cl : clients) {
+		if (cl.m_is_connected && cl.m_id != id) {
+			cl.send_remove_player(id);
+		}
+	}
+	cout << "Client[" << id << "] Disconnected." << endl;
 }
 
 int main()
@@ -268,6 +289,8 @@ int main()
 		case IO_RECV:
 		{
 			int player_index = static_cast<int>(key);
+			if (num_bytes == 0) 
+				disconnect_client(player_index);
 			cout << "Client[" << player_index << "] sent a message." << endl;
 			SESSION& cl = clients[player_index];
 			unsigned char* p = reinterpret_cast<unsigned char *>(exp_over->m_buff);
